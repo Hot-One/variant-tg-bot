@@ -19,7 +19,6 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
-
 	"gopkg.in/telebot.v3"
 )
 
@@ -116,8 +115,9 @@ func main() {
 		func(c telebot.Context) error {
 			var msg = `👋 Xush kelibsiz!
 				Quyidagi buyruqlardan foydalanishingiz mumkin:
-				- /list   -- Shaxslar ro'yxatini ko'rish
-				- /totals -- Umumiy natijalarni ko'rish
+				- /list    -- Shaxslar ro'yxatini ko'rish
+				- /totals  -- Umumiy natijalarni ko'rish
+				- /bymonth -- Oy bo'yicha to'lovlarni ko'rish
 			`
 
 			return c.Send(msg)
@@ -231,6 +231,21 @@ func main() {
 		},
 	)
 
+	// Handle /bymonth command
+	bot.Handle("/bymonth",
+		func(c telebot.Context) error {
+			menu := &telebot.ReplyMarkup{}
+			years := []string{"2025", "2026"}
+			var buttons []telebot.Btn
+			for _, y := range years {
+				btn := menu.Data(y, "bymonth_year", y)
+				buttons = append(buttons, btn)
+			}
+			menu.Inline(buttons)
+			return c.Send("📅 Yilni tanlang:", menu)
+		},
+	)
+
 	// Handle select list flow
 	bot.Handle(&telebot.Btn{Unique: "select"},
 		func(c telebot.Context) error {
@@ -341,6 +356,98 @@ func main() {
 			if result == "" {
 				result = "❌ Person not found."
 			}
+
+			return c.Send(result, telebot.ModeHTML)
+		},
+	)
+
+	// Handle bymonth year selection
+	bot.Handle(&telebot.Btn{Unique: "bymonth_year"},
+		func(c telebot.Context) error {
+			year := c.Data()
+			menu := &telebot.ReplyMarkup{}
+			months := []string{"Yanvar", "Fevral", "Mart", "Aprel", "May", "Iyun", "Iyul", "Avgust", "Sentabr", "Oktabr", "Noyabr", "Dekabr"}
+
+			var rows []telebot.Row
+			for i := 0; i < len(months); i += 3 {
+				var btns []telebot.Btn
+				for j := i; j < i+3 && j < len(months); j++ {
+					btns = append(btns, menu.Data(months[j], "bymonth_month", year+"|"+months[j]))
+				}
+				rows = append(rows, menu.Row(btns...))
+			}
+			menu.Inline(rows...)
+			return c.Send("📅 Oyni tanlang:", menu)
+		},
+	)
+
+	// Handle bymonth month selection
+	bot.Handle(&telebot.Btn{Unique: "bymonth_month"},
+		func(c telebot.Context) error {
+			refreshData(strg)
+
+			parts := strings.SplitN(c.Data(), "|", 2)
+			if len(parts) != 2 {
+				return c.Send("❌ Invalid selection")
+			}
+
+			year := parts[0]
+			month := parts[1]
+
+			// Map month names to column indices
+			monthsMap := map[string]int{
+				"Yanvar": 0, "Fevral": 1, "Mart": 2, "Aprel": 3,
+				"May": 4, "Iyun": 5, "Iyul": 6, "Avgust": 7,
+				"Sentabr": 8, "Oktabr": 9, "Noyabr": 10, "Dekabr": 11,
+			}
+
+			monthIndex, ok := monthsMap[month]
+			if !ok {
+				return c.Send("❌ Invalid month")
+			}
+
+			var col int
+			switch year {
+			case "2025":
+				col = 9 + monthIndex // Columns J-U (index 9-20)
+			case "2026":
+				col = 22 + monthIndex // Columns W-AH (index 22-33)
+			default:
+				return c.Send("❌ Invalid year")
+			}
+
+			if len(strg.Data) == 0 {
+				return c.Send("❌ No data found in spreadsheet")
+			}
+
+			var result string
+			var totalPayment float64
+			var hasData bool
+			var count = 1
+
+			for _, row := range strg.Data {
+				if len(row) < 2 || strings.TrimSpace(fmt.Sprintf("%v", row[0])) == "" {
+					continue
+				}
+
+				var payment float64
+				if len(row) > col {
+					payment = parseFloatFromCell(row[col])
+				}
+
+				name := fmt.Sprintf("%v", row[0])
+				result += fmt.Sprintf("%d. %s — 💰 %s\n", count, html.EscapeString(name), formatMoney(payment))
+
+				totalPayment += payment
+				hasData = true
+				count++
+			}
+
+			if !hasData {
+				return c.Send(fmt.Sprintf("❌ %s %s oyida hech qanday to'lov topilmadi", month, year))
+			}
+
+			result = fmt.Sprintf("📅 <b>%s %s</b>\n\n%s\n<b>Jami:</b> %s", month, year, result, formatMoney(totalPayment))
 
 			return c.Send(result, telebot.ModeHTML)
 		},
