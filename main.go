@@ -420,10 +420,12 @@ func main() {
 				return c.Send("❌ No data found in spreadsheet")
 			}
 
-			var result string
-			var totalPayment float64
-			var hasData bool
-			var count = 1
+			var (
+				blocks       []string
+				totalPayment float64
+				hasData      bool
+				count        = 1
+			)
 
 			for _, row := range strg.Data {
 				if len(row) < 2 || strings.TrimSpace(fmt.Sprintf("%v", row[0])) == "" {
@@ -435,8 +437,49 @@ func main() {
 					payment = parseFloatFromCell(row[col])
 				}
 
-				name := fmt.Sprintf("%v", row[0])
-				result += fmt.Sprintf("%d. %s — 💰 %s\n", count, html.EscapeString(name), formatMoney(payment))
+				// No payment this month: omit only if contract is fully paid (Berdi >= Summa)
+				if len(row) > 3 {
+					summa := parseFloat(row[2])
+					berdiTotal := parseFloatFromCell(row[3])
+					if berdiTotal >= summa && payment == 0 {
+						continue
+					}
+				}
+
+				var qoldiq float64
+				if len(row) > 4 {
+					qoldiq = parseFloatFromCell(row[4])
+				}
+
+				var oyega float64
+				if len(row) > 8 {
+					oyega = parseFloatFromCell(row[8])
+				}
+
+				sana := "—"
+				if len(row) > 6 {
+					d := parseFloatFromCell(row[6])
+					if d > 0 {
+						sana = fmt.Sprintf("%.0f-kun", d)
+					} else {
+						s := strings.TrimSpace(fmt.Sprintf("%v", row[6]))
+						if s != "" && s != "-" {
+							sana = s
+						}
+					}
+				}
+
+				name := strings.TrimSpace(fmt.Sprintf("%v", row[0]))
+				// Narrow stacked lines — wraps on phone; no wide <pre> table
+				blocks = append(blocks, fmt.Sprintf(
+					"<b>%d.</b> %s\n   💰 Berdi  %s\n   💸 Qoldiq %s\n   🎰 Oyega %s\n   📅 Sana: %s",
+					count,
+					html.EscapeString(name),
+					html.EscapeString(formatMoney(payment)),
+					html.EscapeString(formatMoney(qoldiq)),
+					html.EscapeString(formatMoney(oyega)),
+					html.EscapeString(sana),
+				))
 
 				totalPayment += payment
 				hasData = true
@@ -447,9 +490,21 @@ func main() {
 				return c.Send(fmt.Sprintf("❌ %s %s oyida hech qanday to'lov topilmadi", month, year))
 			}
 
-			result = fmt.Sprintf("📅 <b>%s %s</b>\n\n%s\n<b>Jami:</b> %s", month, year, result, formatMoney(totalPayment))
-
-			return c.Send(result, telebot.ModeHTML)
+			chunks := chunkStringsByByteLen(blocks, 3500)
+			for i, part := range chunks {
+				title := fmt.Sprintf("📅 <b>%s %s</b>", month, year)
+				if len(chunks) > 1 {
+					title += fmt.Sprintf(" <i>(%d/%d)</i>", i+1, len(chunks))
+				}
+				msg := title + "\n\n" + strings.Join(part, "\n\n")
+				if i == len(chunks)-1 {
+					msg += "\n\n<b>Jami:</b> " + html.EscapeString(formatMoney(totalPayment))
+				}
+				if err := c.Send(msg, telebot.ModeHTML); err != nil {
+					return err
+				}
+			}
+			return nil
 		},
 	)
 
@@ -529,6 +584,39 @@ func formatMoney(val float64) string {
 	s := fmt.Sprintf("%.2f", val)
 	s = strings.ReplaceAll(s, ".", ",")
 	return "$" + s
+}
+
+// chunkStringsByByteLen splits lines so each chunk stays under maxChunkBytes (for Telegram limits).
+func chunkStringsByByteLen(lines []string, maxChunkBytes int) [][]string {
+	if len(lines) == 0 {
+		return nil
+	}
+	if maxChunkBytes <= 0 {
+		return [][]string{lines}
+	}
+	var (
+		chunks [][]string
+		cur    []string
+		curN   int
+	)
+	for _, ln := range lines {
+		add := len(ln)
+		if len(cur) > 0 {
+			add++ // newline
+		}
+		if curN+add > maxChunkBytes && len(cur) > 0 {
+			chunks = append(chunks, cur)
+			cur = nil
+			curN = 0
+			add = len(ln)
+		}
+		cur = append(cur, ln)
+		curN += add
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
 }
 
 func parseFloat(val any) float64 {
